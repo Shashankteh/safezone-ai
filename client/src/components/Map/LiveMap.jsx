@@ -1,173 +1,164 @@
-import React, { useRef, useEffect, useState } from 'react';
-import { useSafety } from '../../context/SafetyContext';
+import React, { useEffect, useRef, useState } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
-const LiveMap = () => {
+// Fix default marker icons
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+});
+
+const LiveMap = ({ className = '' }) => {
+  const mapContainer = useRef(null);
   const mapRef = useRef(null);
-  const leafletMap = useRef(null);
-  const myMarker = useRef(null);
-  const contactMarkers = useRef([]);
-  const { myLocation, trustedLocations, nearbyAlerts } = useSafety();
-  const [mapReady, setMapReady] = useState(false);
-  const [locating, setLocating] = useState(false);
+  const markerRef = useRef(null);
+  const [location, setLocation] = useState(null);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [locError, setLocError] = useState(null);
 
+  // Online/offline detection
   useEffect(() => {
-    if (leafletMap.current || !mapRef.current) return;
-    const L = window.L;
-    if (!L) return;
-
-    leafletMap.current = L.map(mapRef.current, {
-      center: [26.9124, 75.7873],
-      zoom: 14,
-      zoomControl: false,
-    });
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
-      maxZoom: 19,
-    }).addTo(leafletMap.current);
-
-    // Zoom controls bottom-right, above nav bar
-    L.control.zoom({ position: 'bottomright' }).addTo(leafletMap.current);
-
-    setMapReady(true);
-    return () => { leafletMap.current?.remove(); leafletMap.current = null; };
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
 
-  // Auto-geolocate on load
+  // Init map
   useEffect(() => {
-    if (!mapReady) return;
-    setLocating(true);
-    navigator.geolocation?.getCurrentPosition(
+    if (mapRef.current || !mapContainer.current) return;
+
+    mapRef.current = L.map(mapContainer.current, {
+      center: [26.9124, 75.7873],
+      zoom: 13,
+      zoomControl: true,
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© SafeZone AI',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(mapRef.current);
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  // Get location
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocError('Geolocation not supported');
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude: lat, longitude: lng } = pos.coords;
-        leafletMap.current?.setView([lat, lng], 15, { animate: true });
-        setLocating(false);
+        setLocation({ lat, lng });
+        setLocError(null);
+
+        if (mapRef.current) {
+          mapRef.current.setView([lat, lng], 15);
+
+          if (markerRef.current) {
+            markerRef.current.setLatLng([lat, lng]);
+          } else {
+            const youIcon = L.divIcon({
+              className: '',
+              html: `<div style="
+                width:18px;height:18px;
+                background:#00f5ff;
+                border:3px solid #fff;
+                border-radius:50%;
+                box-shadow:0 0 12px #00f5ff,0 0 24px #00f5ff88;
+                animation:pulse 2s infinite;
+              "></div>`,
+              iconSize: [18, 18],
+              iconAnchor: [9, 9],
+            });
+            markerRef.current = L.marker([lat, lng], { icon: youIcon })
+              .addTo(mapRef.current)
+              .bindPopup('📍 You are here');
+          }
+        }
       },
-      () => setLocating(false),
-      { enableHighAccuracy: true, timeout: 10000 }
+      (err) => setLocError('Allow location access for full features'),
+      { enableHighAccuracy: true, maximumAge: 10000 }
     );
-  }, [mapReady]);
 
-  // "You" marker
-  useEffect(() => {
-    if (!mapReady || !myLocation) return;
-    const L = window.L;
-    const { lat, lng } = myLocation;
-    const icon = L.divIcon({
-      className: '',
-      html: `<div style="position:relative;width:24px;height:24px;display:flex;align-items:center;justify-content:center">
-        <div style="position:absolute;width:40px;height:40px;border-radius:50%;border:2px solid rgba(0,255,136,0.4);top:-8px;left:-8px;animation:sz-ping 2s ease-in-out infinite;"></div>
-        <div style="width:18px;height:18px;background:#00ff88;border-radius:50%;border:3px solid white;box-shadow:0 0 12px rgba(0,255,136,0.9);"></div>
-      </div>`,
-      iconSize: [24, 24], iconAnchor: [12, 12],
-    });
-    if (myMarker.current) {
-      myMarker.current.setLatLng([lat, lng]);
-    } else {
-      myMarker.current = L.marker([lat, lng], { icon })
-        .bindPopup(`<b style="color:#00ff88">📍 You</b><br/><small>${lat.toFixed(5)}, ${lng.toFixed(5)}</small>`)
-        .addTo(leafletMap.current);
-      leafletMap.current.setView([lat, lng], 15, { animate: true });
-    }
-  }, [myLocation, mapReady]);
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
 
-  // Contact markers
-  useEffect(() => {
-    if (!mapReady) return;
-    const L = window.L;
-    contactMarkers.current.forEach(m => m.remove());
-    contactMarkers.current = [];
-    trustedLocations.forEach((c, i) => {
-      const col = ['#00c8ff','#a855f7','#f59e0b','#ec4899'][i % 4];
-      const icon = L.divIcon({
-        className: '',
-        html: `<div style="width:14px;height:14px;background:${col};border-radius:50%;border:2px solid white;box-shadow:0 0 8px ${col}99"></div>`,
-        iconSize: [14,14], iconAnchor: [7,7],
-      });
-      contactMarkers.current.push(
-        L.marker([c.lat, c.lng], { icon }).bindPopup(`👤 ${c.name || 'Contact'}`).addTo(leafletMap.current)
-      );
-    });
-  }, [trustedLocations, mapReady]);
-
-  const centerOnMe = () => {
-    if (myLocation) {
-      leafletMap.current?.setView([myLocation.lat, myLocation.lng], 16, { animate: true });
-    } else {
-      setLocating(true);
-      navigator.geolocation?.getCurrentPosition(
-        (pos) => { leafletMap.current?.setView([pos.coords.latitude, pos.coords.longitude], 16, { animate: true }); setLocating(false); },
-        () => setLocating(false),
-        { enableHighAccuracy: true }
-      );
+  const centerMap = () => {
+    if (mapRef.current && location) {
+      mapRef.current.setView([location.lat, location.lng], 15);
     }
   };
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+    <div style={{ position: 'relative', width: '100%', height: '100%', background: '#0a0a0f' }}>
+      {/* Map */}
+      <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
 
-      {/* LIVE MAP badge — top left, small */}
+      {/* LIVE Badge */}
       <div style={{
-        position: 'absolute', top: '12px', left: '12px', zIndex: 1000,
-        background: 'rgba(5,13,20,0.92)', backdropFilter: 'blur(12px)',
-        border: '1px solid rgba(0,255,136,0.2)', borderRadius: '8px',
-        padding: '5px 10px', display: 'flex', alignItems: 'center', gap: '7px',
-        fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', pointerEvents: 'none',
+        position: 'absolute', top: 12, left: 12, zIndex: 1000,
+        background: 'rgba(0,245,255,0.15)', border: '1px solid #00f5ff',
+        borderRadius: 20, padding: '4px 12px', color: '#00f5ff',
+        fontSize: 12, fontWeight: 700, letterSpacing: 2,
+        backdropFilter: 'blur(8px)',
       }}>
-        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#00ff88', boxShadow: '0 0 5px #00ff88', display: 'inline-block', animation: 'sz-blink 2s infinite' }} />
-        <span style={{ color: 'rgba(255,255,255,0.7)' }}>LIVE MAP</span>
+        🟢 LIVE MAP
       </div>
 
-      {/* Center on me — bottom left above nav */}
-      <button onClick={centerOnMe} style={{
-        position: 'absolute', bottom: '90px', left: '12px', zIndex: 1000,
-        background: 'rgba(5,13,20,0.92)', backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(0,200,255,0.3)', borderRadius: '8px',
-        padding: '7px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-        fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#00c8ff',
+      {/* Online/Offline */}
+      <div style={{
+        position: 'absolute', top: 12, right: 12, zIndex: 1000,
+        background: online ? 'rgba(0,255,136,0.15)' : 'rgba(255,50,50,0.15)',
+        border: `1px solid ${online ? '#00ff88' : '#ff3232'}`,
+        borderRadius: 20, padding: '4px 12px',
+        color: online ? '#00ff88' : '#ff3232',
+        fontSize: 11, fontWeight: 600,
+        backdropFilter: 'blur(8px)',
       }}>
-        {locating ? '⏳' : '🎯'} {locating ? 'Finding...' : 'Center Me'}
+        {online ? '● ONLINE' : '○ OFFLINE'}
+      </div>
+
+      {/* Location error */}
+      {locError && (
+        <div style={{
+          position: 'absolute', top: 50, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 1000, background: 'rgba(255,165,0,0.2)', border: '1px solid orange',
+          borderRadius: 8, padding: '6px 14px', color: 'orange', fontSize: 12,
+          backdropFilter: 'blur(8px)', textAlign: 'center',
+        }}>
+          ⚠️ {locError}
+        </div>
+      )}
+
+      {/* Center Me button */}
+      <button onClick={centerMap} style={{
+        position: 'absolute', bottom: 90, left: 12, zIndex: 1000,
+        background: 'rgba(0,245,255,0.15)', border: '1px solid #00f5ff',
+        borderRadius: 20, padding: '6px 14px', color: '#00f5ff',
+        fontSize: 12, cursor: 'pointer', backdropFilter: 'blur(8px)',
+      }}>
+        🎯 Center Me
       </button>
 
-      {/* Legend */}
-      <div style={{
-        position: 'absolute', bottom: '140px', left: '12px', zIndex: 1000,
-        background: 'rgba(5,13,20,0.85)', backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px',
-        padding: '8px 12px', fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-          <div style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#00ff88', boxShadow: '0 0 5px #00ff88' }} />
-          <span style={{ color: 'rgba(255,255,255,0.5)' }}>You</span>
-        </div>
-        {trustedLocations.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginTop: '5px' }}>
-            <div style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#00c8ff' }} />
-            <span style={{ color: 'rgba(255,255,255,0.5)' }}>Contacts ({trustedLocations.length})</span>
-          </div>
-        )}
-        {nearbyAlerts.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginTop: '5px' }}>
-            <div style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#ff3366' }} />
-            <span style={{ color: '#ff3366' }}>Alerts ({nearbyAlerts.length})</span>
-          </div>
-        )}
-      </div>
-
       <style>{`
-        @keyframes sz-ping { 0%,100%{transform:scale(1);opacity:.6} 50%{transform:scale(1.4);opacity:.1} }
-        @keyframes sz-blink { 0%,100%{opacity:1} 50%{opacity:.3} }
-        .leaflet-bottom.leaflet-right { bottom: 90px !important; }
-        .leaflet-control-zoom a {
-          background: rgba(5,13,20,0.9) !important;
-          color: white !important;
-          border-color: rgba(0,255,136,0.2) !important;
-          font-size: 16px !important;
+        @keyframes pulse {
+          0%,100% { transform: scale(1); opacity:1; }
+          50% { transform: scale(1.4); opacity:0.7; }
         }
-        .leaflet-control-zoom a:hover { background: rgba(0,255,136,0.1) !important; }
-        .leaflet-attribution-flag { display: none !important; }
-        .leaflet-control-attribution { font-size: 9px; opacity: 0.4; }
+        .leaflet-container { background: #0a0a0f !important; }
       `}</style>
     </div>
   );
