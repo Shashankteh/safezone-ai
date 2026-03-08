@@ -28,7 +28,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: '*',
     methods: ['GET', 'POST'],
     credentials: true
   },
@@ -44,12 +44,18 @@ connectRedis();
 app.use(helmet({ crossOriginEmbedderPolicy: false }));
 app.use(cors({
   origin: (origin, cb) => {
-    const allowed = [process.env.CLIENT_URL || 'http://localhost:3000', 'http://localhost:3000', 'http://localhost:3001'];
-    if (!origin || allowed.includes(origin)) cb(null, true);
+    const allowed = [
+      process.env.CLIENT_URL,
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://safezoneai.vercel.app',
+      'https://safezone-ai-five.vercel.app',
+    ].filter(Boolean);
+    if (!origin || allowed.includes(origin) || origin.endsWith('.vercel.app')) cb(null, true);
     else cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ['GET','POST','PUT','DELETE','PATCH'],
+  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
 }));
 
