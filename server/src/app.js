@@ -24,6 +24,7 @@ const aiRoutes       = require('./routes/ai.routes');
 const setupSockets   = require('./socket/locationSocket');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 const io = new Server(server, {
