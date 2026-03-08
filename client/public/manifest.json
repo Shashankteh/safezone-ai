@@ -1,0 +1,40 @@
+{
+  "short_name": "SafeZone",
+  "name": "SafeZone AI — Smart Safety Platform",
+  "description": "Real-time personal safety with AI-powered threat detection",
+  "icons": [
+    {
+      "src": "icons/icon-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable any"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0a0f1e",
+  "background_color": "#0a0f1e",
+  "orientation": "portrait-primary",
+  "categories": ["safety", "utilities"],
+  "shortcuts": [
+    {
+      "name": "SOS Emergency",
+      "short_name": "SOS",
+      "description": "Trigger emergency SOS",
+      "url": "/dashboard?action=sos",
+      "icons": [{ "src": "icons/sos-icon.png", "sizes": "192x192" }]
+    }
+  ]
+}
