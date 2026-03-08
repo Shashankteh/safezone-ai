@@ -2,12 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import api from '../services/api';
 import { useSafety } from '../context/SafetyContext';
 
+const AI_URL = process.env.REACT_APP_AI_URL || 'https://safezone-ai-service-btg9.onrender.com';
+
 const SafetyScorePage = () => {
   const { myLocation } = useSafety();
   const [scoreData, setScoreData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [aiPrediction, setAiPrediction] = useState(null);
-  const [nearbyHelp, setNearbyHelp] = useState({ police: [], hospital: [] });
   const [animScore, setAnimScore] = useState(0);
 
   const fetchAll = useCallback(async () => {
@@ -22,9 +23,9 @@ const SafetyScorePage = () => {
       }
     } catch {}
 
-    // Try AI service
+    // AI service
     try {
-      const aiRes = await fetch(`http://localhost:8000/predict`, {
+      const aiRes = await fetch(`${AI_URL}/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lat: myLocation.lat, lng: myLocation.lng, timestamp: new Date().toISOString() }),
@@ -37,7 +38,6 @@ const SafetyScorePage = () => {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // Animate score counting up
   const targetScore = scoreData?.score || (myLocation ? 72 : 0);
   useEffect(() => {
     if (targetScore === 0) return;
@@ -55,7 +55,6 @@ const SafetyScorePage = () => {
   const getScoreLabel = (s) => s >= 70 ? 'SAFE' : s >= 40 ? 'MODERATE' : 'DANGER';
   const scoreColor = getScoreColor(animScore);
 
-  // Circular gauge
   const radius = 80;
   const circumference = 2 * Math.PI * radius;
   const strokeDash = circumference - (animScore / 100) * circumference;
@@ -94,10 +93,8 @@ const SafetyScorePage = () => {
       <div style={{ ...card, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '32px 20px' }}>
         <div style={{ position: 'relative', marginBottom: '20px' }}>
           <svg width="200" height="200" viewBox="0 0 200 200">
-            {/* Background ring */}
             <circle cx="100" cy="100" r={radius} fill="none"
               stroke="rgba(255,255,255,0.05)" strokeWidth="12" />
-            {/* Score ring */}
             <circle cx="100" cy="100" r={radius} fill="none"
               stroke={scoreColor} strokeWidth="12"
               strokeDasharray={circumference}
@@ -106,7 +103,6 @@ const SafetyScorePage = () => {
               transform="rotate(-90 100 100)"
               style={{ transition: 'stroke-dashoffset 0.05s linear, stroke 0.5s ease', filter: `drop-shadow(0 0 8px ${scoreColor})` }}
             />
-            {/* Score text */}
             <text x="100" y="90" textAnchor="middle"
               style={{ fontFamily: "'Orbitron', monospace", fontSize: '36px', fontWeight: 900, fill: scoreColor }}>
               {animScore}
@@ -120,8 +116,6 @@ const SafetyScorePage = () => {
               {getScoreLabel(animScore)}
             </text>
           </svg>
-
-          {/* Pulse effect */}
           {animScore >= 70 && (
             <div style={{
               position: 'absolute', inset: '-10px', borderRadius: '50%',
@@ -130,13 +124,11 @@ const SafetyScorePage = () => {
             }} />
           )}
         </div>
-
         {loading && (
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,255,136,0.5)' }}>
             🔄 Analyzing area...
           </div>
         )}
-
         {!myLocation && (
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: 'rgba(255,170,0,0.7)', textAlign: 'center' }}>
             ⚠️ Share your location on the Map page to get a real safety score
@@ -166,11 +158,8 @@ const SafetyScorePage = () => {
               </div>
               <div style={{ height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
                 <div style={{
-                  height: '100%', width: `${pct}%`,
-                  background: col,
-                  borderRadius: '3px',
-                  boxShadow: `0 0 8px ${col}`,
-                  transition: 'width 1s ease',
+                  height: '100%', width: `${pct}%`, background: col,
+                  borderRadius: '3px', boxShadow: `0 0 8px ${col}`, transition: 'width 1s ease',
                 }} />
               </div>
             </div>
@@ -188,7 +177,7 @@ const SafetyScorePage = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
               <div style={{
                 width: '50px', height: '50px', borderRadius: '50%',
-                background: `rgba(168,85,247,0.15)`, border: '1px solid rgba(168,85,247,0.4)',
+                background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.4)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
               }}>🤖</div>
               <div>
@@ -213,22 +202,19 @@ const SafetyScorePage = () => {
           <div style={{ textAlign: 'center', padding: '16px' }}>
             <div style={{ fontSize: '32px', marginBottom: '8px' }}>🤖</div>
             <div style={{ color: 'rgba(255,255,255,0.35)', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px' }}>
-              AI service offline — start Python service for predictions
-            </div>
-            <div style={{ color: 'rgba(255,255,255,0.2)', fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', marginTop: '8px' }}>
-              cd ai-service && python main.py
+              {loading ? '🔄 Fetching AI prediction...' : 'AI prediction unavailable for this location'}
             </div>
           </div>
         )}
       </div>
 
-      {/* Time-based tips */}
+      {/* Safety Tips */}
       <div style={card}>
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,200,255,0.5)', marginBottom: '16px' }}>
           <span style={{ color: 'rgba(0,200,255,0.3)' }}>// </span>SAFETY_TIPS
         </div>
         {[
-          { icon: '🕐', tip: 'Current time is ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' — ' + (new Date().getHours() >= 22 || new Date().getHours() < 6 ? 'Late night. Stay in well-lit areas.' : 'Stay alert in crowded areas.') },
+          { icon: '🕐', tip: 'Current time: ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' — ' + (new Date().getHours() >= 22 || new Date().getHours() < 6 ? 'Late night. Stay in well-lit areas.' : 'Stay alert in crowded areas.') },
           { icon: '📍', tip: 'Share your live location with a trusted contact before travelling.' },
           { icon: '🔋', tip: 'Keep your phone charged above 20% for emergency use.' },
           { icon: '📞', tip: 'Emergency: 112 (Police) · 108 (Ambulance) · 1091 (Women helpline)' },
@@ -245,8 +231,7 @@ const SafetyScorePage = () => {
         background: 'linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,200,255,0.1))',
         border: '1px solid rgba(0,255,136,0.3)', borderRadius: '8px',
         color: '#00ff88', fontFamily: "'JetBrains Mono', monospace",
-        fontSize: '12px', cursor: 'pointer', letterSpacing: '0.08em',
-        textTransform: 'uppercase',
+        fontSize: '12px', cursor: 'pointer', letterSpacing: '0.08em', textTransform: 'uppercase',
       }}>
         🔄 REFRESH ANALYSIS
       </button>
