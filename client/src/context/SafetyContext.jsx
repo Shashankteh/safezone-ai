@@ -1,163 +1,133 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { getSocket } from '../services/socket';
-import { sosAPI, locationAPI } from '../services/api';
-import toast from 'react-hot-toast';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from './AuthContext';
 
-const SafetyContext = createContext(null);
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+export const SafetyContext = createContext();
 
 export const SafetyProvider = ({ children }) => {
-  const [myLocation, setMyLocation] = useState(null);
-  const [trustedLocations, setTrustedLocations] = useState([]);
-  const [sosActive, setSosActive] = useState(false);
-  const [sosId, setSosId] = useState(null);
+  const { user, isAuthenticated } = useAuth();
+  const [location, setLocation] = useState(null);
   const [isSharing, setIsSharing] = useState(false);
-  const [locationError, setLocationError] = useState(null);
-  const [nearbyAlerts, setNearbyAlerts] = useState([]);
+  const [sosActive, setSosActive] = useState(false);
+  const [safetyScore, setSafetyScore] = useState(null);
+  const [contacts, setContacts] = useState([]);
+  const [nearbyIncidents, setNearbyIncidents] = useState([]);
   const watchIdRef = useRef(null);
-  const locationIntervalRef = useRef(null);
 
-  // Setup socket listeners
-  useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-
-    // Receive SOS alert from a trusted contact
-    socket.on('sos:alert', (data) => {
-      toast.error(`🚨 SOS from ${data.from.name}!`, {
-        duration: 10000,
-        style: { background: '#1a0a14', border: '1px solid #ff3366', color: 'white' }
+  // Fetch trusted contacts
+  const fetchContacts = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const token = localStorage.getItem('accessToken');
+      const res = await fetch(`${API}/safety/contacts`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-      setNearbyAlerts(prev => [data, ...prev].slice(0, 10));
-    });
-
-    // Receive location from trusted contact
-    socket.on('location:received', (data) => {
-      setTrustedLocations(prev => {
-        const filtered = prev.filter(l => l.userId !== data.userId);
-        return [...filtered, data];
-      });
-    });
-
-    // SOS countdown (fall detection)
-    socket.on('sos:countdown', (data) => {
-      toast(`⚠️ ${data.message}`, {
-        duration: data.seconds * 1000,
-        style: { background: '#1a1400', border: '1px solid #ffaa00', color: 'white' }
-      });
-    });
-
-    // Geofence breach
-    socket.on('geofence:breach', (data) => {
-      toast.error(`🔔 Geofence: ${data.zoneName} — ${data.type}`, { duration: 5000 });
-    });
-
-    return () => {
-      socket.off('sos:alert');
-      socket.off('location:received');
-      socket.off('sos:countdown');
-      socket.off('geofence:breach');
-    };
-  }, []);
-
-  // Start live location tracking
-  const startTracking = useCallback(() => {
-    if (!navigator.geolocation) {
-      setLocationError('Geolocation not supported');
-      return;
+      if (res.ok) {
+        const data = await res.json();
+        setContacts(data?.data?.contacts || []);
+      }
+    } catch (err) {
+      console.warn('Could not fetch contacts:', err.message);
     }
+  }, [isAuthenticated]);
+
+  // Start location sharing
+  const startLocationSharing = useCallback(() => {
+    if (!navigator.geolocation) return;
 
     setIsSharing(true);
-    const socket = getSocket();
-
     watchIdRef.current = navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude: lat, longitude: lng, accuracy, speed, altitude, heading } = position.coords;
-        const locationData = { lat, lng, accuracy, speed, altitude, heading };
+      (pos) => {
+        const loc = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          timestamp: Date.now()
+        };
+        setLocation(loc);
 
-        setMyLocation({ lat, lng, accuracy, timestamp: Date.now() });
-        setLocationError(null);
-
-        // Emit via socket (real-time)
-        socket?.emit('location:update', locationData);
-      },
-      (err) => {
-        setLocationError(err.message);
-        setIsSharing(false);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 5000
-      }
-    );
-
-    // Also save to DB every 30 seconds
-    locationIntervalRef.current = setInterval(async () => {
-      if (myLocation) {
-        try {
-          await locationAPI.update(myLocation);
-        } catch (e) {
-          console.error('Location save failed:', e);
+        // Send to backend
+        if (isAuthenticated) {
+          const token = localStorage.getItem('accessToken');
+          fetch(`${API}/location/update`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify(loc)
+          }).catch(() => {});
         }
-      }
-    }, 30000);
+      },
+      (err) => console.warn('Location error:', err.message),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+    );
+  }, [isAuthenticated]);
 
-  }, [myLocation]);
-
-  // Stop tracking
-  const stopTracking = useCallback(() => {
-    if (watchIdRef.current) {
+  // Stop location sharing
+  const stopLocationSharing = useCallback(() => {
+    if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
-    }
-    if (locationIntervalRef.current) {
-      clearInterval(locationIntervalRef.current);
     }
     setIsSharing(false);
   }, []);
 
   // Trigger SOS
-  const triggerSOS = useCallback(async (message = '') => {
+  const triggerSOS = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
-      const res = await sosAPI.trigger({
-        lat: myLocation?.lat,
-        lng: myLocation?.lng,
-        message: message || 'SOS! I need immediate help!',
-        triggerType: 'manual'
+      const token = localStorage.getItem('accessToken');
+      const body = location
+        ? { lat: location.lat, lng: location.lng, message: 'Emergency SOS triggered' }
+        : { message: 'Emergency SOS triggered' };
+
+      await fetch(`${API}/sos/trigger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(body)
       });
+
       setSosActive(true);
-      setSosId(res.data.data.sosId);
-      toast.error('🚨 SOS Activated! Notifying contacts...', {
-        duration: 5000,
-        style: { background: '#1a0a14', border: '1px solid #ff3366', color: 'white' }
-      });
-      return res.data.data;
     } catch (err) {
-      toast.error('Failed to trigger SOS');
-      throw err;
+      console.error('SOS trigger error:', err);
     }
-  }, [myLocation]);
+  }, [isAuthenticated, location]);
 
   // Cancel SOS
   const cancelSOS = useCallback(async () => {
-    if (!sosId) return;
+    if (!isAuthenticated) return;
     try {
-      await sosAPI.cancel(sosId);
+      const token = localStorage.getItem('accessToken');
+      await fetch(`${API}/sos/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setSosActive(false);
-      setSosId(null);
-      toast.success('✅ SOS Cancelled — You are marked as safe');
     } catch (err) {
-      toast.error('Failed to cancel SOS');
+      console.error('Cancel SOS error:', err);
     }
-  }, [sosId]);
+  }, [isAuthenticated]);
 
   // Get current location once
   const getCurrentLocation = useCallback(() => {
     return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation not supported'));
+        return;
+      }
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          setMyLocation({ ...loc, accuracy: pos.coords.accuracy, timestamp: Date.now() });
+          const loc = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy
+          };
+          setLocation(loc);
           resolve(loc);
         },
         reject,
@@ -166,12 +136,37 @@ export const SafetyProvider = ({ children }) => {
     });
   }, []);
 
+  // Init on auth
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchContacts();
+      getCurrentLocation().catch(() => {});
+    } else {
+      stopLocationSharing();
+      setSosActive(false);
+    }
+  }, [isAuthenticated]);
+
+  // Cleanup
+  useEffect(() => {
+    return () => stopLocationSharing();
+  }, []);
+
   return (
     <SafetyContext.Provider value={{
-      myLocation, trustedLocations, sosActive, sosId,
-      isSharing, locationError, nearbyAlerts,
-      startTracking, stopTracking,
-      triggerSOS, cancelSOS, getCurrentLocation
+      location,
+      isSharing,
+      sosActive,
+      safetyScore,
+      contacts,
+      nearbyIncidents,
+      startLocationSharing,
+      stopLocationSharing,
+      triggerSOS,
+      cancelSOS,
+      getCurrentLocation,
+      fetchContacts,
+      setSafetyScore,
     }}>
       {children}
     </SafetyContext.Provider>
@@ -183,3 +178,5 @@ export const useSafety = () => {
   if (!ctx) throw new Error('useSafety must be used within SafetyProvider');
   return ctx;
 };
+
+export default SafetyContext;
