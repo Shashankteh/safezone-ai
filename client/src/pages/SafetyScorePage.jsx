@@ -1,247 +1,320 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import api from '../services/api';
 import { useSafety } from '../context/SafetyContext';
+import BottomNav from '../components/Layout/BottomNav';
 
-const AI_URL = process.env.REACT_APP_AI_URL || 'https://safezone-ai-service-btg9.onrender.com';
+// ── Use env variable for AI service URL ──────────────────────────────────────
+const AI_URL = process.env.REACT_APP_AI_URL
+  || process.env.REACT_APP_API_URL?.replace('/api', '').replace(':5000', ':8000')
+  || 'https://safezone-ai-service-btg9.onrender.com';
 
 const SafetyScorePage = () => {
   const { myLocation } = useSafety();
   const [scoreData, setScoreData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [aiPrediction, setAiPrediction] = useState(null);
-  const [animScore, setAnimScore] = useState(0);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
-  const fetchAll = useCallback(async () => {
+  const fetchSafetyData = useCallback(async () => {
     if (!myLocation?.lat) return;
-    setLoading(true);
-    try {
-      const [scoreRes] = await Promise.allSettled([
-        api.get(`/safety/score?lat=${myLocation.lat}&lng=${myLocation.lng}`),
-      ]);
-      if (scoreRes.status === 'fulfilled') {
-        setScoreData(scoreRes.value.data.data);
-      }
-    } catch {}
 
-    // AI service
+    setLoading(true);
+    setError(null);
+
     try {
+      // 1. Try AI prediction
       const aiRes = await fetch(`${AI_URL}/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat: myLocation.lat, lng: myLocation.lng, timestamp: new Date().toISOString() }),
+        body: JSON.stringify({
+          lat: myLocation.lat,
+          lng: myLocation.lng,
+          timestamp: new Date().toISOString(),
+        }),
       });
-      if (aiRes.ok) setAiPrediction(await aiRes.json());
-    } catch {}
 
-    setLoading(false);
-  }, [myLocation?.lat, myLocation?.lng]);
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        setAiPrediction(aiData);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+        // Derive score from AI probabilities
+        const score = Math.round((1 - aiData.risk_score) * 100);
+        const factors = [
+          { name: 'Crime Rate', value: Math.round(aiData.probabilities?.High * 100 || 30), icon: '🔴', invert: true },
+          { name: 'Lighting', value: aiData.risk_label === 'Low' ? 84 : aiData.risk_label === 'Medium' ? 55 : 25, icon: '💡', invert: false },
+          { name: 'Community Reports', value: Math.round(aiData.probabilities?.Low * 40 || 28), icon: '📊', invert: false },
+          { name: 'Time of Day', value: new Date().getHours() >= 20 || new Date().getHours() <= 6 ? 30 : 80, icon: '🕐', invert: false },
+        ];
 
-  const targetScore = scoreData?.score || (myLocation ? 72 : 0);
+        setScoreData({ score, factors, label: aiData.risk_label, advice: aiData.advice || [] });
+      } else {
+        throw new Error('AI service returned error');
+      }
+    } catch (err) {
+      console.warn('AI service unavailable, using fallback:', err.message);
+
+      // Fallback: calculate simple score from time of day + location
+      const hour = new Date().getHours();
+      const isNight = hour >= 22 || hour <= 5;
+      const isEvening = hour >= 20;
+      const baseScore = isNight ? 42 : isEvening ? 62 : 78;
+
+      setScoreData({
+        score: baseScore,
+        label: baseScore >= 70 ? 'Low' : baseScore >= 50 ? 'Medium' : 'High',
+        factors: [
+          { name: 'Crime Rate', value: isNight ? 65 : 35, icon: '🔴', invert: true },
+          { name: 'Lighting', value: isNight ? 20 : 85, icon: '💡', invert: false },
+          { name: 'Community Reports', value: 28, icon: '📊', invert: false },
+          { name: 'Time of Day', value: isNight ? 25 : isEvening ? 55 : 85, icon: '🕐', invert: false },
+        ],
+        advice: isNight
+          ? ['Stay in well-lit areas', 'Share your location with trusted contacts', 'Trust your instincts']
+          : ['Area appears safe', 'Stay aware of surroundings', 'Share location with contacts'],
+      });
+      setAiPrediction(null);
+    } finally {
+      setLoading(false);
+      setLastUpdated(new Date());
+    }
+  }, [myLocation]);
+
   useEffect(() => {
-    if (targetScore === 0) return;
-    let current = 0;
-    const step = targetScore / 60;
-    const t = setInterval(() => {
-      current = Math.min(current + step, targetScore);
-      setAnimScore(Math.round(current));
-      if (current >= targetScore) clearInterval(t);
-    }, 16);
-    return () => clearInterval(t);
-  }, [targetScore]);
+    fetchSafetyData();
+  }, [fetchSafetyData]);
 
-  const getScoreColor = (s) => s >= 70 ? '#00ff88' : s >= 40 ? '#ffaa00' : '#ff3366';
-  const getScoreLabel = (s) => s >= 70 ? 'SAFE' : s >= 40 ? 'MODERATE' : 'DANGER';
-  const scoreColor = getScoreColor(animScore);
+  // Auto-refresh every 5 min
+  useEffect(() => {
+    const interval = setInterval(fetchSafetyData, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchSafetyData]);
 
-  const radius = 80;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDash = circumference - (animScore / 100) * circumference;
+  const scoreColor = scoreData
+    ? scoreData.score >= 70 ? '#00ff88' : scoreData.score >= 50 ? '#ffaa00' : '#ff3366'
+    : '#ffaa00';
 
-  const factors = scoreData?.factors || {
-    crimeRate: Math.round(30 + Math.random() * 40),
-    lightingScore: Math.round(50 + Math.random() * 40),
-    communityReports: Math.round(10 + Math.random() * 30),
-  };
-
-  const card = {
-    background: 'rgba(10,22,40,0.85)', border: '1px solid rgba(0,255,136,0.1)',
-    borderRadius: '12px', padding: '20px', marginBottom: '14px',
+  const riskBg = {
+    Low: 'rgba(0,255,136,0.1)',
+    Medium: 'rgba(255,170,0,0.1)',
+    High: 'rgba(255,51,102,0.1)',
   };
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#050d14',
-      backgroundImage: 'radial-gradient(ellipse at top, rgba(0,255,136,0.04) 0%, transparent 60%)',
-      padding: '24px 16px 90px', fontFamily: "'Rajdhani', sans-serif",
+      minHeight: '100vh', background: '#050d14', paddingBottom: 80,
+      backgroundImage: 'linear-gradient(rgba(0,255,136,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,136,0.02) 1px, transparent 1px)',
+      backgroundSize: '50px 50px'
     }}>
+
       {/* Header */}
-      <div style={{ marginBottom: '28px' }}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,255,136,0.5)', marginBottom: '4px' }}>
-          06 — AI ANALYSIS
+      <div style={{ padding: '20px 16px 8px' }}>
+        <div style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(0,255,136,0.5)', letterSpacing: 3, marginBottom: 4 }}>
+          // SAFETY_ANALYSIS
         </div>
-        <h1 style={{ fontFamily: "'Orbitron', monospace", fontSize: '22px', color: 'white', margin: '0 0 4px' }}>
-          SAFETY SCORE
+        <h1 style={{ margin: 0, color: 'white', fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>
+          Safety Score
         </h1>
-        <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: '13px', margin: 0, fontFamily: "'JetBrains Mono', monospace" }}>
-          {myLocation ? `${myLocation.lat?.toFixed(4)}, ${myLocation.lng?.toFixed(4)}` : 'Enable location to get score'}
-        </p>
+        {myLocation && (
+          <div style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>
+            📍 {myLocation.lat?.toFixed(4)}, {myLocation.lng?.toFixed(4)}
+          </div>
+        )}
       </div>
 
-      {/* Big Score Gauge */}
-      <div style={{ ...card, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '32px 20px' }}>
-        <div style={{ position: 'relative', marginBottom: '20px' }}>
-          <svg width="200" height="200" viewBox="0 0 200 200">
-            <circle cx="100" cy="100" r={radius} fill="none"
-              stroke="rgba(255,255,255,0.05)" strokeWidth="12" />
-            <circle cx="100" cy="100" r={radius} fill="none"
-              stroke={scoreColor} strokeWidth="12"
-              strokeDasharray={circumference}
-              strokeDashoffset={strokeDash}
-              strokeLinecap="round"
-              transform="rotate(-90 100 100)"
-              style={{ transition: 'stroke-dashoffset 0.05s linear, stroke 0.5s ease', filter: `drop-shadow(0 0 8px ${scoreColor})` }}
-            />
-            <text x="100" y="90" textAnchor="middle"
-              style={{ fontFamily: "'Orbitron', monospace", fontSize: '36px', fontWeight: 900, fill: scoreColor }}>
-              {animScore}
-            </text>
-            <text x="100" y="115" textAnchor="middle"
-              style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', fill: 'rgba(255,255,255,0.4)' }}>
-              / 100
-            </text>
-            <text x="100" y="138" textAnchor="middle"
-              style={{ fontFamily: "'Orbitron', monospace", fontSize: '13px', fontWeight: 700, fill: scoreColor }}>
-              {getScoreLabel(animScore)}
-            </text>
-          </svg>
-          {animScore >= 70 && (
-            <div style={{
-              position: 'absolute', inset: '-10px', borderRadius: '50%',
-              border: `2px solid ${scoreColor}`,
-              animation: 'pulse-score 2s ease-in-out infinite',
-            }} />
-          )}
+      {/* No location warning */}
+      {!myLocation && (
+        <div style={{
+          margin: '16px', padding: '16px',
+          background: 'rgba(255,170,0,0.08)', border: '1px solid rgba(255,170,0,0.3)',
+          borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10
+        }}>
+          <span style={{ fontSize: 20 }}>⚠️</span>
+          <div>
+            <div style={{ color: '#ffaa00', fontWeight: 600, fontSize: 13 }}>Location Required</div>
+            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 2 }}>
+              Go to Map page and click "Share Location" to get your safety score
+            </div>
+          </div>
         </div>
-        {loading && (
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,255,136,0.5)' }}>
-            🔄 Analyzing area...
+      )}
+
+      {/* Score Circle */}
+      {(scoreData || loading) && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '20px 16px' }}>
+          <div style={{ position: 'relative', width: 180, height: 180 }}>
+            {/* SVG ring */}
+            <svg width="180" height="180" style={{ transform: 'rotate(-90deg)' }}>
+              <circle cx="90" cy="90" r="75" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="10" />
+              {scoreData && (
+                <circle
+                  cx="90" cy="90" r="75" fill="none"
+                  stroke={scoreColor} strokeWidth="10"
+                  strokeLinecap="round"
+                  strokeDasharray={`${2 * Math.PI * 75}`}
+                  strokeDashoffset={`${2 * Math.PI * 75 * (1 - scoreData.score / 100)}`}
+                  style={{ transition: 'stroke-dashoffset 1.5s ease, stroke 0.5s ease', filter: `drop-shadow(0 0 8px ${scoreColor})` }}
+                />
+              )}
+            </svg>
+
+            {/* Center content */}
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex',
+              flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+            }}>
+              {loading ? (
+                <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, fontFamily: 'monospace' }}>
+                  SCANNING...
+                </div>
+              ) : scoreData ? (
+                <>
+                  <div style={{ fontSize: 42, fontWeight: 900, color: scoreColor, lineHeight: 1, fontFamily: 'monospace' }}>
+                    {scoreData.score}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', fontFamily: 'monospace', marginTop: 2 }}>
+                    / 100
+                  </div>
+                  <div style={{
+                    marginTop: 8, fontSize: 11, fontFamily: 'monospace',
+                    padding: '3px 10px', borderRadius: 2,
+                    background: riskBg[scoreData.label] || 'rgba(255,255,255,0.05)',
+                    color: scoreColor, border: `1px solid ${scoreColor}40`
+                  }}>
+                    {scoreData.label?.toUpperCase()} RISK
+                  </div>
+                </>
+              ) : null}
+            </div>
           </div>
-        )}
-        {!myLocation && (
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: 'rgba(255,170,0,0.7)', textAlign: 'center' }}>
-            ⚠️ Share your location on the Map page to get a real safety score
-          </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* AI Badge */}
+      {aiPrediction && (
+        <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'center' }}>
+          <span style={{
+            fontFamily: 'monospace', fontSize: 10, padding: '3px 12px',
+            background: 'rgba(0,200,255,0.1)', border: '1px solid rgba(0,200,255,0.3)',
+            color: '#00c8ff', borderRadius: 2
+          }}>
+            🤖 AI POWERED · {Math.round(aiPrediction.confidence * 100)}% confidence
+          </span>
+        </div>
+      )}
 
       {/* Risk Factors */}
-      <div style={card}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,255,136,0.5)', marginBottom: '16px' }}>
-          <span style={{ color: 'rgba(0,255,136,0.3)' }}>// </span>RISK_FACTORS
+      {scoreData && (
+        <div style={{ margin: '16px 16px 0' }}>
+          <div style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(0,255,136,0.5)', letterSpacing: 2, marginBottom: 12 }}>
+            // RISK_FACTORS
+          </div>
+          <div style={{
+            background: 'rgba(10,22,40,0.8)', border: '1px solid rgba(0,255,136,0.08)',
+            borderRadius: 8, overflow: 'hidden'
+          }}>
+            {scoreData.factors.map((factor, i) => {
+              const barVal = factor.invert ? (100 - factor.value) : factor.value;
+              const barColor = barVal >= 70 ? '#00ff88' : barVal >= 50 ? '#ffaa00' : '#ff3366';
+              return (
+                <div key={i} style={{
+                  padding: '14px 16px',
+                  borderBottom: i < scoreData.factors.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {factor.icon} {factor.name}
+                    </span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: barColor }}>
+                      {factor.value}%
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%', width: `${factor.value}%`, borderRadius: 2,
+                      background: barColor, transition: 'width 1s ease',
+                      boxShadow: `0 0 8px ${barColor}60`
+                    }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-        {[
-          { label: 'Crime Rate', value: factors.crimeRate, icon: '🔴', invert: true },
-          { label: 'Lighting', value: factors.lightingScore, icon: '💡' },
-          { label: 'Community Reports', value: factors.communityReports, icon: '📊', invert: true },
-        ].map(({ label, value, icon, invert }) => {
-          const pct = Math.min(value, 100);
-          const col = invert
-            ? pct < 30 ? '#00ff88' : pct < 60 ? '#ffaa00' : '#ff3366'
-            : pct > 70 ? '#00ff88' : pct > 40 ? '#ffaa00' : '#ff3366';
-          return (
-            <div key={label} style={{ marginBottom: '14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '13px' }}>{icon} {label}</span>
-                <span style={{ color: col, fontFamily: "'JetBrains Mono', monospace", fontSize: '12px' }}>{pct}%</span>
-              </div>
-              <div style={{ height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
-                <div style={{
-                  height: '100%', width: `${pct}%`, background: col,
-                  borderRadius: '3px', boxShadow: `0 0 8px ${col}`, transition: 'width 1s ease',
-                }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      )}
 
-      {/* AI Prediction */}
-      <div style={{ ...card, borderColor: 'rgba(168,85,247,0.2)' }}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(168,85,247,0.6)', marginBottom: '16px' }}>
-          <span style={{ color: 'rgba(168,85,247,0.3)' }}>// </span>AI_PREDICTION
+      {/* AI Prediction Detail */}
+      {aiPrediction && (
+        <div style={{ margin: '16px 16px 0' }}>
+          <div style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(0,255,136,0.5)', letterSpacing: 2, marginBottom: 12 }}>
+            // AI_PREDICTION
+          </div>
+          <div style={{
+            background: 'rgba(10,22,40,0.8)', border: '1px solid rgba(0,200,255,0.15)',
+            borderRadius: 8, padding: 16
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              {['Low', 'Medium', 'High'].map(level => (
+                <div key={level} style={{ textAlign: 'center' }}>
+                  <div style={{
+                    fontSize: 18, fontWeight: 900, fontFamily: 'monospace',
+                    color: level === 'Low' ? '#00ff88' : level === 'Medium' ? '#ffaa00' : '#ff3366'
+                  }}>
+                    {Math.round((aiPrediction.probabilities?.[level] || 0) * 100)}%
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>
+                    {level.toUpperCase()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-        {aiPrediction ? (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-              <div style={{
-                width: '50px', height: '50px', borderRadius: '50%',
-                background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.4)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
-              }}>🤖</div>
-              <div>
-                <div style={{ color: 'white', fontWeight: 700, fontSize: '16px' }}>
-                  Risk: {aiPrediction.risk_level}
-                </div>
-                <div style={{ color: 'rgba(255,255,255,0.4)', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px' }}>
-                  Confidence: {Math.round((aiPrediction.risk_score || 0.5) * 100)}%
-                </div>
-              </div>
-            </div>
-            {aiPrediction.contributing_factors?.map(f => (
-              <div key={f} style={{
-                display: 'inline-block', margin: '3px',
-                background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.3)',
-                borderRadius: '4px', padding: '3px 10px',
-                fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', color: 'rgba(168,85,247,0.8)',
-              }}>{f}</div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ textAlign: 'center', padding: '16px' }}>
-            <div style={{ fontSize: '32px', marginBottom: '8px' }}>🤖</div>
-            <div style={{ color: 'rgba(255,255,255,0.35)', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px' }}>
-              {loading ? '🔄 Fetching AI prediction...' : 'AI prediction unavailable for this location'}
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Safety Tips */}
-      <div style={card}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(0,200,255,0.5)', marginBottom: '16px' }}>
-          <span style={{ color: 'rgba(0,200,255,0.3)' }}>// </span>SAFETY_TIPS
-        </div>
-        {[
-          { icon: '🕐', tip: 'Current time: ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' — ' + (new Date().getHours() >= 22 || new Date().getHours() < 6 ? 'Late night. Stay in well-lit areas.' : 'Stay alert in crowded areas.') },
-          { icon: '📍', tip: 'Share your live location with a trusted contact before travelling.' },
-          { icon: '🔋', tip: 'Keep your phone charged above 20% for emergency use.' },
-          { icon: '📞', tip: 'Emergency: 112 (Police) · 108 (Ambulance) · 1091 (Women helpline)' },
-        ].map(({ icon, tip }, i) => (
-          <div key={i} style={{ display: 'flex', gap: '10px', marginBottom: '12px', alignItems: 'flex-start' }}>
-            <span style={{ fontSize: '18px', flexShrink: 0 }}>{icon}</span>
-            <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '13px', lineHeight: 1.4 }}>{tip}</span>
+      {scoreData?.advice?.length > 0 && (
+        <div style={{ margin: '16px 16px 0' }}>
+          <div style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(0,255,136,0.5)', letterSpacing: 2, marginBottom: 12 }}>
+            // SAFETY_TIPS
           </div>
-        ))}
-      </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {scoreData.advice.slice(0, 4).map((tip, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10,
+                background: 'rgba(10,22,40,0.8)', border: '1px solid rgba(0,255,136,0.08)',
+                borderRadius: 6, padding: '10px 14px'
+              }}>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>
+                  {i === 0 ? '🕐' : i === 1 ? '📤' : i === 2 ? '⚡' : '🛡️'}
+                </span>
+                <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12, lineHeight: 1.5 }}>{tip}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-      <button onClick={fetchAll} style={{
-        width: '100%', padding: '14px',
-        background: 'linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,200,255,0.1))',
-        border: '1px solid rgba(0,255,136,0.3)', borderRadius: '8px',
-        color: '#00ff88', fontFamily: "'JetBrains Mono', monospace",
-        fontSize: '12px', cursor: 'pointer', letterSpacing: '0.08em', textTransform: 'uppercase',
-      }}>
-        🔄 REFRESH ANALYSIS
-      </button>
+      {/* Refresh Button */}
+      {myLocation && (
+        <div style={{ margin: '20px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+          <button onClick={fetchSafetyData} disabled={loading} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '12px 32px', fontFamily: 'monospace', fontSize: 12,
+            background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.3)',
+            color: '#00ff88', cursor: loading ? 'not-allowed' : 'pointer',
+            borderRadius: 4, transition: 'all 0.2s', opacity: loading ? 0.6 : 1
+          }}>
+            {loading ? '⏳ SCANNING...' : '🔄 REFRESH SCORE'}
+          </button>
+          {lastUpdated && (
+            <div style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.25)' }}>
+              Last updated: {lastUpdated.toLocaleTimeString()}
+            </div>
+          )}
+        </div>
+      )}
 
-      <style>{`
-        @keyframes pulse-score {
-          0%, 100% { transform: scale(1); opacity: 0.6; }
-          50% { transform: scale(1.05); opacity: 0.2; }
-        }
-      `}</style>
+      <BottomNav />
     </div>
   );
 };
